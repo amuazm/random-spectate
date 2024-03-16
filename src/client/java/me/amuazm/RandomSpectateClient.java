@@ -14,14 +14,21 @@ import net.minecraft.text.Text;
 public class RandomSpectateClient implements ClientModInitializer {
   public static final String MOD_ID = "random-spectate";
   private static final long INTERVAL_MS = 1000 * 60 * 3; // 3 Minutes
-  private boolean isModEnabled = false; // This flag keeps track of whether the mod is enabled.
+  private boolean isModEnabled = false;
   private long lastActionTime = 0;
   private UUID lastSpectatedUuid = null;
+  private int tickCounter = 20;
 
   @Override
   public void onInitializeClient() {
     ClientTickEvents.END_CLIENT_TICK.register(
         client -> {
+          if (tickCounter < 20) {
+            tickCounter += 1;
+            return;
+          }
+          tickCounter = 0;
+
           if (client.world == null || client.player == null) {
             return;
           }
@@ -121,8 +128,7 @@ public class RandomSpectateClient implements ClientModInitializer {
                 }
 
                 if (target == null) {
-                  client.player.sendMessage(
-                      Text.literal("Could not get PlayerEntity."));
+                  client.player.sendMessage(Text.literal("Could not get PlayerEntity."));
                   return;
                 }
 
