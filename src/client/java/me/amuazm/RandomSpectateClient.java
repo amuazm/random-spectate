@@ -87,6 +87,7 @@ public class RandomSpectateClient implements ClientModInitializer {
     }
 
     List<UUID> playerUuids = new ArrayList<>(networkHandler.getPlayerUuids());
+    playerUuids.remove(client.player.getUuid());
 
     client.player.sendMessage(Text.literal(playerUuids.size() + " players found."));
 
@@ -99,6 +100,7 @@ public class RandomSpectateClient implements ClientModInitializer {
 
   private void spectatePlayer(
       MinecraftClient client, ClientPlayNetworkHandler networkHandler, UUID targetUuid) {
+    lastSpectatedUuid = targetUuid;
     if (client.world == null || client.player == null) {
       return;
     }
@@ -107,11 +109,20 @@ public class RandomSpectateClient implements ClientModInitializer {
     new Thread(
             () -> {
               try {
-                Thread.sleep(5000);
+                Thread.sleep(250);
                 PlayerEntity target = client.world.getPlayerByUuid(targetUuid);
 
+                int attemptsLeft = 4 * 5;
+
+                while (target == null && attemptsLeft > 0) {
+                  Thread.sleep(250);
+                  target = client.world.getPlayerByUuid(targetUuid);
+                  attemptsLeft -= 1;
+                }
+
                 if (target == null) {
-                  client.player.sendMessage(Text.literal("Could not get PlayerEntity."));
+                  client.player.sendMessage(
+                      Text.literal("Could not get PlayerEntity."));
                   return;
                 }
 
@@ -119,7 +130,6 @@ public class RandomSpectateClient implements ClientModInitializer {
                 client.player.sendMessage(
                     Text.literal("You are now spectating " + target.getDisplayName().getString()),
                     false);
-                lastSpectatedUuid = targetUuid;
               } catch (InterruptedException e) {
                 client.player.sendMessage(Text.literal("Could not execute thread sleep: " + e));
               }
