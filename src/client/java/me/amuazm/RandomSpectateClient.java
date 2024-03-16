@@ -95,6 +95,7 @@ public class RandomSpectateClient implements ClientModInitializer {
 
     List<UUID> playerUuids = new ArrayList<>(networkHandler.getPlayerUuids());
     playerUuids.remove(client.player.getUuid());
+    playerUuids.remove(lastSpectatedUuid);
 
     client.player.sendMessage(Text.literal(playerUuids.size() + " players found."));
 
