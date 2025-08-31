@@ -6,6 +6,7 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayNetworkHandler;
+import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.network.packet.c2s.play.SpectatorTeleportC2SPacket;
 import net.minecraft.text.Text;
@@ -16,8 +17,11 @@ import java.util.Random;
 import java.util.UUID;
 
 public class RandomSpectateClient implements ClientModInitializer {
+    // Constants.
     public static final String MOD_ID = "random-spectate";
-    private static final long INTERVAL_MS = 1000 * 60 * 3; // 3 Minutes
+    private static final long CHANGE_PLAYER_INTERVAL_MS = 1000 * 60 * 3; // 3 Minutes
+
+    // States.
     private boolean isModEnabled = false;
     private long lastActionTime = 0;
     private UUID lastSpectatedUuid = null;
@@ -25,6 +29,7 @@ public class RandomSpectateClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        // Loop
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (tickCounter < 20) {
                 tickCounter += 1;
@@ -33,51 +38,76 @@ public class RandomSpectateClient implements ClientModInitializer {
 
             tickCounter = 0;
 
+            if (!isModEnabled) {
+                return;
+            }
+
             if (client.world == null || client.player == null) {
                 return;
             }
 
-            boolean isSpectator = client.player.isSpectator();
-            boolean nextIntervalReached = System.currentTimeMillis() - lastActionTime >= INTERVAL_MS;
-            boolean targetPlayerGone = lastSpectatedUuid != null && client.world.getPlayerByUuid(lastSpectatedUuid) == null;
-            ClientPlayNetworkHandler networkHandler;
-
-            if (isModEnabled && isSpectator && (nextIntervalReached || targetPlayerGone)) {
-                networkHandler = MinecraftClient.getInstance().getNetworkHandler();
-
-                if (networkHandler == null) {
-                    client.player.sendMessage(Text.literal("No network handler."));
-                    return;
-                }
-
-                client.player.sendMessage(Text.literal("Network handler found."));
-            } else {
+            if (!client.player.isSpectator()) {
                 return;
             }
 
-            if (nextIntervalReached) {
-                client.player.sendMessage(Text.literal("Changing target."));
+            boolean isNextIntervalReached = System.currentTimeMillis() - lastActionTime >= CHANGE_PLAYER_INTERVAL_MS;
+            boolean isCurrentTargetValid = lastSpectatedUuid != null && client.world.getPlayerByUuid(lastSpectatedUuid) != null;
+
+            // Don't continue if we are still in our interval and the target is valid
+            if (!isNextIntervalReached && isCurrentTargetValid) {
+                return;
+            }
+
+            ClientPlayNetworkHandler networkHandler = MinecraftClient.getInstance().getNetworkHandler();
+
+            if (networkHandler == null) {
+                client.player.sendMessage(Text.literal("No network handler."));
+                return;
+            }
+
+            client.player.sendMessage(Text.literal("Network handler found."));
+
+            if (isNextIntervalReached) {
+                // Spectate a new player
+                client.player.sendMessage(Text.literal("Spectating a new player."));
                 spectateRandomPlayer(client, networkHandler);
                 lastActionTime = System.currentTimeMillis();
             } else {
-                boolean leftServer = !networkHandler.getPlayerUuids().contains(lastSpectatedUuid);
-                if (leftServer) {
-                    client.player.sendMessage(
-                            Text.literal("Target no longer in server. Changing target."));
+                // See if we need a new player or try to set out camera to the target again
+                boolean isNotInServer = networkHandler.getPlayerList().stream()
+                        .noneMatch(playerListEntry -> playerListEntry.getProfile().getId().equals(lastSpectatedUuid));
+
+                if (isNotInServer) {
+                    client.player.sendMessage(Text.literal("Target no longer found in player list."));
                     spectateRandomPlayer(client, networkHandler);
                 } else {
-                    client.player.sendMessage(Text.literal("Target disappeared. Moving to target."));
+                    client.player.sendMessage(Text.literal("Target disappeared. Attempting to spectate again..."));
                     spectatePlayer(client, networkHandler, lastSpectatedUuid);
                 }
             }
         });
 
+        // Command
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, commandRegistryAccess) ->
                 dispatcher.register(ClientCommandManager.literal("randomspectate").executes(context -> {
                     lastActionTime = 0;
-                    isModEnabled = !isModEnabled; // Toggle the state of the mod
+
+                    // Toggle the state of the mod
+                    isModEnabled = !isModEnabled;
                     context.getSource().sendFeedback(Text.literal(
                             "Random Spectate is now " + (isModEnabled ? "enabled." : "disabled.")));
+
+                    if (!isModEnabled) {
+                        // Reset camera and last spectated uuid
+                        MinecraftClient client = MinecraftClient.getInstance();
+
+                        if (client.player != null) {
+                            client.setCameraEntity(client.player);
+                        }
+
+                        lastSpectatedUuid = null;
+                    }
+
                     return 1; // Command was executed successfully
                 })));
     }
@@ -87,47 +117,55 @@ public class RandomSpectateClient implements ClientModInitializer {
             return;
         }
 
-        List<UUID> playerUuids = new ArrayList<>(networkHandler.getPlayerUuids());
-        playerUuids.remove(client.player.getUuid());
-        playerUuids.remove(lastSpectatedUuid);
+        List<PlayerListEntry> playerListEntries = new ArrayList<>(networkHandler.getPlayerList().stream().toList());
+        // Ignore self
+        playerListEntries.removeIf(playerListEntry -> playerListEntry.getProfile().getId().equals(client.player.getUuid()));
+        // No repeat spectates
+        playerListEntries.removeIf(playerListEntry -> playerListEntry.getProfile().getId().equals(lastSpectatedUuid));
 
-        client.player.sendMessage(Text.literal(playerUuids.size() + " player uuids found."));
+        client.player.sendMessage(Text.literal(playerListEntries.size() + " player list entries found."));
 
-        if (!playerUuids.isEmpty()) {
-            UUID targetUuid = playerUuids.get(new Random().nextInt(playerUuids.size()));
-            spectatePlayer(client, networkHandler, targetUuid);
+        if (!playerListEntries.isEmpty()) {
+            // Get a random player from the list and spectate them
+            PlayerListEntry playerListEntry = playerListEntries.get(new Random().nextInt(playerListEntries.size()));
+            spectatePlayer(client, networkHandler, playerListEntry.getProfile().getId());
         }
     }
 
     private void spectatePlayer(MinecraftClient client, ClientPlayNetworkHandler networkHandler, UUID targetUuid) {
+        // To prevent this targetPlayerEntity from being spectated twice in a row
         lastSpectatedUuid = targetUuid;
 
         if (client.world == null || client.player == null) {
             return;
         }
 
+        // Teleport to them
         networkHandler.sendPacket(new SpectatorTeleportC2SPacket(targetUuid));
 
+        // Try get their player and spectate them
         new Thread(() -> {
             try {
                 Thread.sleep(250);
-                PlayerEntity target = client.world.getPlayerByUuid(targetUuid);
+                PlayerEntity targetPlayerEntity = client.world.getPlayerByUuid(targetUuid);
 
                 int attemptsLeft = 4 * 5;
 
-                while (target == null && attemptsLeft > 0) {
+                // Repeatedly try get the target's PlayerEntity
+                while (targetPlayerEntity == null && attemptsLeft > 0) {
                     Thread.sleep(250);
-                    target = client.world.getPlayerByUuid(targetUuid);
+                    targetPlayerEntity = client.world.getPlayerByUuid(targetUuid);
                     attemptsLeft -= 1;
                 }
 
-                if (target == null) {
-                    client.player.sendMessage(Text.literal("Could not get PlayerEntity."));
+                if (targetPlayerEntity == null) {
+                    client.player.sendMessage(Text.literal("Could not get PlayerEntity for UUID " + targetUuid));
                     return;
                 }
 
-                client.setCameraEntity(target); // Spectate the selected player
-                client.player.sendMessage(Text.literal("You are now spectating " + target.getDisplayName().getString()), false);
+                // Set our camera to them
+                client.setCameraEntity(targetPlayerEntity);
+                client.player.sendMessage(Text.literal("You are now spectating " + targetPlayerEntity.getDisplayName().getString()), false);
             } catch (InterruptedException e) {
                 client.player.sendMessage(Text.literal("Could not execute thread sleep: " + e));
             }
